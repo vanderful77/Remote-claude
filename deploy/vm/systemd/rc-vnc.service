@@ -1,0 +1,11 @@
+# 虚拟显示器 + VNC 服务端，合二为一（TigerVNC 的 Xvnc）。
+# 只监听 127.0.0.1，无密码：唯一的入口是经过 rcd 鉴权的 /vnc。
+[Unit]
+Description=Xvnc virtual display :1 (localhost only)
+
+[Service]
+ExecStart=/usr/bin/Xvnc :1 -geometry 1920x1080 -depth 24 -localhost yes -rfbport 5901 -SecurityTypes None -AlwaysShared
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,23 @@
+{
+  "name": "remote-claude",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/daemon",
+    "packages/client"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "rcd": "tsx packages/daemon/src/cli.ts",
+    "rc": "tsx packages/client/src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

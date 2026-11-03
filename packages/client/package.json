@@ -1,0 +1,12 @@
+{
+  "name": "@rc/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "bin": { "rc": "./src/cli.ts" },
+  "dependencies": {
+    "@rc/core": "*",
+    "ws": "^8.18.0"
+  }
+}

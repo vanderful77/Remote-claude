@@ -1,0 +1,13 @@
+{
+  "name": "@rc/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "bin": { "rcd": "./src/cli.ts" },
+  "dependencies": {
+    "@rc/core": "*",
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0"
+  }
+}

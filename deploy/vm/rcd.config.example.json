@@ -1,0 +1,18 @@
+{
+  "name": "claude-ws",
+  "listen": { "host": "100.64.0.10", "port": 8443 },
+  "stateDir": "~/.local/state/rcd",
+  "hookPort": 8444,
+  "terminal": {
+    "tmuxSocket": "rcd",
+    "session": "claude",
+    "command": "claude",
+    "cwd": "~/workspace"
+  },
+  "vnc": { "host": "127.0.0.1", "port": 5901 },
+  "syncthing": {
+    "url": "http://127.0.0.1:8384",
+    "apiKeyFile": "~/.config/rcd/syncthing-apikey"
+  },
+  "eventBufferSize": 5000
+}

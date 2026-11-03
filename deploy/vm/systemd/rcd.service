@@ -1,0 +1,14 @@
+# rcd 需要 Tailscale IP 已经就绪才能绑定；绑定失败会退出，由 Restart 自动重试。
+[Unit]
+Description=remote-claude daemon
+After=rc-desktop.service network-online.target
+
+[Service]
+Environment=DISPLAY=:1
+WorkingDirectory=%h/Remote-claude
+ExecStart=/usr/bin/npx tsx packages/daemon/src/cli.ts start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
