@@ -6,7 +6,7 @@ import { DeviceStore, PAIRING_TTL_MS } from "./devices";
 import { hooksSettings } from "./hooks";
 import { Daemon } from "./server";
 
-const HOOK_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "hooks", "forward-hook.mjs");
+const HOOKS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "hooks");
 
 function usage(): never {
   console.log(`rcd - remote-claude daemon
@@ -60,7 +60,7 @@ async function main() {
       return;
     }
     case "hooks-config":
-      console.log(JSON.stringify(hooksSettings(HOOK_SCRIPT, cfg.hookPort), null, 2));
+      console.log(JSON.stringify(hooksSettings(HOOKS_DIR, cfg.hookPort), null, 2));
       return;
     default:
       usage();

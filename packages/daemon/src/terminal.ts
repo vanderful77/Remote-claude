@@ -59,6 +59,29 @@ export async function ensureSession(cfg: TerminalConfig): Promise<void> {
   await tmux(cfg, "set-option", "-g", "window-size", "latest").catch(() => {});
 }
 
+/**
+ * 把一段文字"粘贴"进 Claude 的输入框，然后按回车。
+ *
+ * 用 tmux 的 paste-buffer -p（bracketed paste，括号粘贴）而不是 send-keys 逐字输入：
+ * 括号粘贴会在文字前后加上特殊标记，程序就知道"这是一整段粘贴"，
+ * 多行文字里的换行不会被当成回车提交，中文也不会被拆成一个个按键。
+ * 粘贴和回车之间稍等一下，给 Claude Code 的界面处理粘贴的时间。
+ */
+export async function sendText(cfg: TerminalConfig, text: string, settleMs = 150): Promise<void> {
+  await ensureSession(cfg);
+  await new Promise<void>((resolve, reject) => {
+    const p = execFile("tmux", ["-u", "-L", cfg.tmuxSocket, "load-buffer", "-b", "rcd-input", "-"], { env: utf8Env() }, (err) =>
+      err ? reject(err) : resolve(),
+    );
+    p.stdin?.end(text);
+  });
+  // 目标写成 "=会话名:"：paste-buffer / send-keys 需要的是窗格，"会话名:" 表示该会话当前窗口的当前窗格
+  const pane = `=${cfg.session}:`;
+  await tmux(cfg, "paste-buffer", "-p", "-d", "-b", "rcd-input", "-t", pane);
+  await new Promise((r) => setTimeout(r, settleMs));
+  await tmux(cfg, "send-keys", "-t", pane, "Enter");
+}
+
 export async function killSession(cfg: TerminalConfig): Promise<void> {
   await tmux(cfg, "kill-session", "-t", `=${cfg.session}`).catch(() => {});
 }

@@ -75,7 +75,7 @@ describe("断线重连与补发", () => {
 
     await env.daemon.stop();
     const reset = once(c, "reset", 8000);
-    const d2 = new Daemon({ ...env.cfg, listen: { host: "127.0.0.1", port } }, quietLogger, 100, 400);
+    const d2 = new Daemon({ ...env.cfg, listen: { host: "127.0.0.1", port } }, quietLogger, { heartbeatMs: 100, heartbeatTimeoutMs: 400 });
     await d2.start();
     env.daemon = d2; // cleanup 时停掉新的
     await reset;

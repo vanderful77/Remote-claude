@@ -19,6 +19,7 @@ class FakeSyncthing {
       this.apiKeyOk++;
       const u = new URL(req.url!, "http://x");
       if (u.pathname === "/rest/system/status") return res.end(JSON.stringify({ startTime: this.startTime }));
+      if (u.pathname === "/rest/config/folders") return res.end(JSON.stringify([{ id: "inbox", path: "/home/claude/workspace/inbox" }]));
       if (u.pathname === "/rest/events") {
         const since = Number(u.searchParams.get("since") ?? 0);
         const limit = u.searchParams.get("limit");
@@ -88,7 +89,9 @@ describe("SyncthingWatcher", () => {
     fake.push("StateChanged", { folder: "inbox", from: "syncing", to: "idle" });
 
     await waitFor(() => got.find((e) => e.t === "sync.folder"), 5000, "folder state");
-    expect(got.filter((e) => e.t === "file.ready")).toEqual([{ t: "file.ready", folder: "inbox", path: "data.zip" }]);
+    expect(got.filter((e) => e.t === "file.ready")).toEqual([
+      { t: "file.ready", folder: "inbox", path: "data.zip", absPath: "/home/claude/workspace/inbox/data.zip" },
+    ]);
     expect(got).toContainEqual({ t: "sync.progress", folder: "inbox", path: "data.zip", bytesDone: 500, bytesTotal: 1000 });
     expect(got).toContainEqual(expect.objectContaining({ t: "sync.item", path: "bad.bin", error: "disk full" }));
     // 启动前的旧事件不算

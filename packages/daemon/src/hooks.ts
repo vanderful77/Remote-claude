@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { join } from "node:path";
 import type { ClaudeState, EventBody } from "@rc/core";
 
 /**
@@ -67,7 +68,14 @@ export function hookToEvent(p: any): EventBody {
 export class ClaudeStateTracker {
   state: ClaudeState = "unknown";
 
-  update(hook: string): ClaudeState | null {
+  /** 直接设置状态（例如 GUI 回答了权限请求之后），返回是否有变化 */
+  set(next: ClaudeState): boolean {
+    if (next === this.state) return false;
+    this.state = next;
+    return true;
+  }
+
+  update(hook: string, payload?: any): ClaudeState | null {
     let next: ClaudeState | null = null;
     switch (hook) {
       case "SessionStart":
@@ -79,9 +87,17 @@ export class ClaudeStateTracker {
       case "PostToolUse":
         next = "busy";
         break;
-      case "Notification":
+      case "PermissionRequest":
         next = "awaiting_input";
         break;
+      case "Notification": {
+        // notification_type 区分"等你确认权限"和"空闲太久的提醒"；旧版本没有这个字段时按"等你确认"处理
+        const type = payload?.notification_type;
+        if (type === undefined || type === "permission_prompt" || type === "elicitation_dialog" || type === "elicitation_url_dialog")
+          next = "awaiting_input";
+        else if (type === "idle_prompt") next = "idle";
+        break;
+      }
       case "SessionEnd":
         next = "stopped";
         break;
@@ -92,15 +108,22 @@ export class ClaudeStateTracker {
   }
 }
 
-export function startHookServer(
-  port: number,
-  onHook: (payload: unknown) => void,
-): Promise<Server> {
+export interface HookHandlers {
+  onHook(payload: unknown): void;
+  /**
+   * 权限请求：返回要写到 hook stdout 的 JSON（GUI 做了决定），
+   * 或 null（没人回答，hook 以退出码 2 结束，Claude Code 照常在终端里弹确认框）。
+   */
+  onPermission(payload: unknown): Promise<object | null>;
+}
+
+export function startHookServer(port: number, handlers: HookHandlers): Promise<Server> {
   const server = createServer((req, res) => {
-    if (req.method !== "POST" || req.url !== "/hook") {
+    if (req.method !== "POST" || (req.url !== "/hook" && req.url !== "/permission")) {
       res.writeHead(404).end();
       return;
     }
+    const isPermission = req.url === "/permission";
     let size = 0;
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => {
@@ -114,13 +137,28 @@ export function startHookServer(
     });
     req.on("end", () => {
       if (res.writableEnded) return;
-      // 先回复再处理：hook 脚本在等这个回复，越快返回越不拖慢 Claude
-      res.writeHead(204).end();
+      let payload: unknown;
       try {
-        onHook(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       } catch {
-        /* 忽略坏数据 */
+        res.writeHead(400).end();
+        return;
       }
+      if (!isPermission) {
+        // 先回复再处理：hook 脚本在等这个回复，越快返回越不拖慢 Claude
+        res.writeHead(204).end();
+        handlers.onHook(payload);
+        return;
+      }
+      // 权限请求：这个 HTTP 请求会一直挂着，直到 GUI 回答或超时
+      handlers
+        .onPermission(payload)
+        .then((out) => {
+          if (res.writableEnded) return;
+          if (out) res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out));
+          else res.writeHead(204).end();
+        })
+        .catch(() => !res.writableEnded && res.writeHead(204).end());
     });
   });
   return new Promise((resolve, reject) => {
@@ -129,15 +167,26 @@ export function startHookServer(
   });
 }
 
+/** 权限请求等待 GUI 回答的最长时间；hook 的超时要比它长一点 */
+export const PERMISSION_WAIT_MS = 110_000;
+export const PERMISSION_HOOK_TIMEOUT_SEC = 120;
+
 /** 生成 Claude Code settings.json 里的 hooks 配置片段 */
-export function hooksSettings(scriptPath: string, hookPort: number): object {
+export function hooksSettings(hooksDir: string, hookPort: number): object {
+  const script = (name: string) => JSON.stringify(join(hooksDir, name));
   // 端口用命令行参数而不是 VAR=x 前缀：后者是 shell 语法，Windows 上不能用
-  const command = `node ${JSON.stringify(scriptPath)} ${hookPort}`;
+  const command = `node ${script("forward-hook.mjs")} ${hookPort}`;
   const entry = { type: "command", command, timeout: 5 };
   const toolEvents = ["PreToolUse", "PostToolUse"];
   const otherEvents = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "SessionEnd"];
   const hooks: Record<string, unknown[]> = {};
   for (const e of toolEvents) hooks[e] = [{ matcher: "*", hooks: [entry] }];
   for (const e of otherEvents) hooks[e] = [{ hooks: [entry] }];
+  hooks.PermissionRequest = [
+    {
+      matcher: "*",
+      hooks: [{ type: "command", command: `node ${script("permission-hook.mjs")} ${hookPort}`, timeout: PERMISSION_HOOK_TIMEOUT_SEC }],
+    },
+  ];
   return { hooks };
 }

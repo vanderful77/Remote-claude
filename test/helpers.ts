@@ -31,7 +31,7 @@ export async function startEnv(overrides: Partial<DaemonConfig> = {}, port = 0):
     }),
     ...overrides,
   };
-  const daemon = new Daemon(cfg, quietLogger, 100, 400);
+  const daemon = new Daemon(cfg, quietLogger, { heartbeatMs: 100, heartbeatTimeoutMs: 400, chatSettleMs: 50, permissionWaitMs: 3000 });
   await daemon.start();
   const url = `http://127.0.0.1:${daemon.port}`;
   return {

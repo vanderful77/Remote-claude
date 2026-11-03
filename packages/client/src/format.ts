@@ -59,6 +59,19 @@ export function describeEvent(b: EventBody): EventDescription {
       };
     case "file.ready":
       return { kind: "ready", text: `${b.folder}/${b.path}` };
+    case "permission.request":
+      return { kind: "state", text: `权限请求 ${b.tool}${b.summary ? "  " + b.summary : ""}` };
+    case "permission.resolved":
+      return {
+        kind: "state",
+        text: b.by === "timeout" ? "权限请求无人回答，转到终端确认" : `权限请求已${b.behavior === "allow" ? "允许" : "拒绝"}`,
+      };
+    case "chat.input":
+      return {
+        kind: "claude",
+        text: `${b.status === "sent" ? "已发送" : b.status === "queued" ? "已排队" : "发送失败"}：${b.preview}${b.reason ? "  " + b.reason : ""}`,
+        error: b.status === "dropped",
+      };
     default:
       return { kind: "daemon", text: JSON.stringify(b) };
   }

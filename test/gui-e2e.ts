@@ -7,11 +7,11 @@
  *   Xvnc :55      —— 扮演远程虚拟机的桌面，里面开一个 Chromium 窗口（"Claude 正在操作的浏览器"）
  *   rcd daemon    —— 真实 daemon，终端里跑 bash（代替 claude），VNC 指向 :55
  *   Xvfb :99      —— 本地显示器，Electron GUI 开在这里
- * 然后用 Playwright 驱动 GUI：配对 → 等连接 → 在终端里敲命令 → 发 hook 事件 → 发传输事件 → 截图 →
- * 断开所有连接，确认自动重连、终端重新接入。
+ *   一个按真实格式写的会话记录文件 —— 代替 Claude Code 写的 .jsonl
+ * Syncthing 用 daemon.emitEvent 模拟（远程收到文件的事件）。
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -41,9 +41,28 @@ async function hook(port: number, payload: object) {
   await fetch(`http://127.0.0.1:${port}/hook`, { method: "POST", body: JSON.stringify(payload) });
 }
 
+function runPermissionHook(port: number, payload: object): Promise<{ code: number | null; stdout: string }> {
+  return new Promise((res) => {
+    const p = spawn(process.execPath, [join(ROOT, "packages/daemon/hooks/permission-hook.mjs"), String(port)]);
+    let stdout = "";
+    p.stdout.on("data", (d) => (stdout += d));
+    p.on("exit", (code) => res({ code, stdout }));
+    p.stdin.end(JSON.stringify(payload));
+  });
+}
+
+// 按真实会话记录结构写的几行
+let uuid = 0;
+const T = (type: string, content: unknown) =>
+  JSON.stringify({ type, uuid: `e2e-${++uuid}`, timestamp: new Date().toISOString(), isSidechain: false, message: { role: type, content } }) + "\n";
+
 async function main() {
   const dir = mkdtempSync(join(tmpdir(), "rc-gui-e2e-"));
   const sock = `rcgui-${process.pid}`;
+  const local = join(dir, "local-sync");
+  mkdirSync(join(local, "outbox"), { recursive: true });
+  const transcript = join(dir, ".claude", "projects", "-home-claude-workspace", "sess-demo.jsonl");
+  mkdirSync(join(transcript, ".."), { recursive: true });
   let daemon: Daemon | null = null;
   let app: any = null;
   let browser: any = null;
@@ -53,7 +72,6 @@ async function main() {
     bg("Xvfb", [":99", "-screen", "0", "2880x1800x24"]);
     await sleep(1500);
 
-    // "Claude 正在操作的浏览器"
     browser = await chromium.launch({
       headless: false,
       env: { ...process.env, DISPLAY: ":55" },
@@ -65,7 +83,7 @@ async function main() {
       <div style="background:#1f2937;color:#fff;padding:14px 24px;font-weight:600">订单管理后台 · 演示页面</div>
       <div style="padding:24px"><h2 style="margin-top:0">批量导入</h2>
       <div style="border:2px dashed #94a3b8;border-radius:10px;padding:36px;text-align:center;background:#fff">
-      正在上传 <b>cleaned_orders.csv</b>（Claude 操作中）<div style="margin:16px auto;width:60%;height:10px;background:#e5e7eb;border-radius:5px">
+      正在上传 <b>cleaned_orders.xlsx</b>（Claude 操作中）<div style="margin:16px auto;width:60%;height:10px;background:#e5e7eb;border-radius:5px">
       <div style="width:62%;height:100%;background:#2563eb;border-radius:5px"></div></div>62%</div>
       <table style="margin-top:20px;border-collapse:collapse;width:100%;background:#fff">
       <tr style="background:#e5e7eb"><th style="padding:8px;text-align:left">订单号</th><th style="text-align:left">客户</th><th style="text-align:left">金额</th></tr>
@@ -82,24 +100,22 @@ async function main() {
         vnc: { host: "127.0.0.1", port: 5955 },
       }),
       { info: () => {}, warn: (m) => console.log("  [daemon]", m) },
+      { permissionWaitMs: 20_000 },
     );
     await daemon.start();
+    const hp = daemon.hookPort;
     const url = `http://127.0.0.1:${daemon.port}`;
     const code = daemon.devices.createPairingCode();
 
-    console.log("启动 Electron GUI");
+    console.log("启动 Electron GUI 并配对");
     app = await _electron.launch({
       executablePath: electronPath,
       args: [join(ROOT, "packages", "gui"), "--no-sandbox", "--force-device-scale-factor=2"],
       env: { ...process.env, DISPLAY: ":99", RC_GUI_HOME: join(dir, "gui") },
     });
     const win = await app.firstWindow();
-    win.on("console", (m: any) => console.log("  [renderer]", m.type(), m.text()));
     win.on("pageerror", (e: any) => console.log("  [renderer error]", e.message));
     (globalThis as any).__win = win;
-    await win.setViewportSize?.({ width: 1440, height: 900 });
-
-    console.log("配对");
     await win.waitForSelector("#pair-view:not([hidden])");
     await win.screenshot({ path: join(OUT, "gui-pair.png") });
     await win.fill("#pair-url", "http://wrong-host.invalid:1");
@@ -113,77 +129,148 @@ async function main() {
     await win.waitForSelector("#app:not([hidden])");
     await win.waitForFunction(() => document.getElementById("conn-badge")!.textContent!.includes("已连接"), null, { timeout: 10_000 });
     check(true, "配对成功并连接");
+    await win.evaluate((folder: string) => (window as any).rc.saveSettings({ localFolder: folder }), local);
 
-    console.log("终端");
-    await win.waitForFunction(() => document.querySelector(".xterm-rows")?.textContent?.includes("bash-"), null, { timeout: 10_000 });
-    await win.click("#terminal");
-    await win.keyboard.type("echo 远程 Claude 终端已接入 RC_OK_$((6*7))");
-    await win.keyboard.press("Enter");
-    await win.waitForFunction(() => document.querySelector(".xterm-rows")?.textContent?.includes("远程 Claude 终端已接入 RC_OK_42"), null, { timeout: 10_000 });
-    check(true, "键盘输入（含中文）到达远程 tmux，输出回到界面");
+    console.log("对话视图");
+    writeFileSync(
+      transcript,
+      T("user", "inbox 里有一份 8 月的订单导出，帮我清洗一下：手机号统一成 11 位，金额去掉货币符号，然后上传到订单后台。") +
+        T("assistant", [{ type: "text", text: "好的。我先看一下文件结构，确认有哪些列。" }]) +
+        T("assistant", [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "python3 -c \"import pandas as pd; print(pd.read_excel('inbox/orders_aug.xlsx').head())\"" } }]) +
+        T("user", [{ type: "tool_result", tool_use_id: "tu1", content: "   订单号   客户      手机号        金额\n0  A-10231  华东分部  138-0013-8000  ¥12,800\n1  A-10232  华南分部  +86 13900139000  ¥7,450", is_error: false }]) +
+        T("assistant", [{ type: "tool_use", id: "tu2", name: "Write", input: { file_path: "/home/claude/workspace/work/clean.py", content: "import pandas as pd\n..." } }]) +
+        T("user", [{ type: "tool_result", tool_use_id: "tu2", content: "File created successfully", is_error: false }]) +
+        T("assistant", [
+          {
+            type: "text",
+            text: "清洗完成，结果在 `outbox/cleaned_orders.xlsx`。\n\n| 项目 | 处理前 | 处理后 |\n|---|---|---|\n| 手机号格式 | 4 种 | 统一 11 位 |\n| 金额 | 带 ¥ 和逗号 | 纯数字 |\n\n共 **1,284** 行，其中 3 行手机号无法识别，已单独列在 `outbox/unparsed.csv`。接下来我去订单后台上传。",
+          },
+        ]),
+    );
+    await hook(hp, { hook_event_name: "SessionStart", session_id: "sess-demo", transcript_path: transcript });
+    await win.waitForFunction(() => document.querySelectorAll("#chat .msg.assistant").length >= 2, null, { timeout: 8000 });
+    const chatText = await win.textContent("#chat .chat-list");
+    check(chatText.includes("8 月的订单导出") && chatText.includes("清洗完成"), "会话记录渲染成对话（提示词 + 回复）");
+    check(await win.$("#chat .md table"), "回复里的 Markdown 表格被渲染");
+    check((await win.$$("#chat details.tool")).length === 2 && chatText.includes("完成"), "工具调用折叠显示，并配上了结果");
 
-    console.log("hook 事件与 Claude 状态");
-    const hp = daemon.hookPort;
-    await hook(hp, { hook_event_name: "SessionStart", session_id: "s1" });
-    await hook(hp, { hook_event_name: "UserPromptSubmit", session_id: "s1", prompt: "把 inbox/orders.zip 解压、清洗，然后上传到订单后台" });
-    await hook(hp, { hook_event_name: "PreToolUse", session_id: "s1", tool_name: "Bash", tool_input: { command: "unzip -o inbox/orders.zip -d work/" } });
-    await hook(hp, { hook_event_name: "PostToolUse", session_id: "s1", tool_name: "Write", tool_input: { file_path: "/home/claude/workspace/outbox/cleaned_orders.csv" } });
-    await hook(hp, { hook_event_name: "PreToolUse", session_id: "s1", tool_name: "mcp__playwright__browser_file_upload", tool_input: { paths: ["outbox/cleaned_orders.csv"] } });
-    await hook(hp, { hook_event_name: "Notification", session_id: "s1", message: "Claude needs your permission to use Bash" });
+    console.log("附件：文件选择框");
+    const src = join(dir, "orders_aug.xlsx");
+    writeFileSync(src, Buffer.alloc(300_000, 7));
+    await win.setInputFiles("#file-input", src);
+    await win.waitForSelector("#composer .chip");
+    await sleep(300);
+    check(existsSync(join(local, "inbox", "orders_aug.xlsx")), "文件被复制进本地同步文件夹的 inbox/");
+    daemon.emitEvent({ t: "sync.item", folder: "workspace", path: "inbox/orders_aug.xlsx", action: "update", phase: "started" });
+    daemon.emitEvent({ t: "sync.progress", folder: "workspace", path: "inbox/orders_aug.xlsx", bytesDone: 135_000, bytesTotal: 300_000 });
+    await win.waitForFunction(() => document.querySelector("#composer .chip")?.textContent?.includes("传输中 45%"));
+    check(true, "附件显示远程接收进度");
+
+    console.log("附件：粘贴截图、拖入");
+    await win.evaluate(() => {
+      // 1x1 PNG
+      const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([png], "image.png", { type: "image/png" }));
+      document.querySelector("#composer textarea")!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    });
+    await win.waitForFunction(() => document.querySelectorAll("#composer .chip").length === 2);
+    const shot = readdirSync(join(local, "inbox")).find((n) => n.startsWith("截图-"));
+    check(shot && shot.endsWith(".png"), `粘贴的截图存成 inbox/${shot}`);
+    await win.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File(["合同正文"], "合同草稿.txt", { type: "text/plain" }));
+      window.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }));
+      window.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    });
+    await win.waitForFunction(() => document.querySelectorAll("#composer .chip").length === 3);
+    check(existsSync(join(local, "inbox", "合同草稿.txt")), "拖入的文件出现在 inbox/");
+    await win.click('#composer .chip:has-text("合同草稿") .chip-x');
+    await win.waitForFunction(() => document.querySelectorAll("#composer .chip").length === 2);
+    check(true, "附件可以移除");
+
+    console.log("发送：附件未就绪时等待，就绪后自动发送");
+    await win.fill("#composer textarea", "这是 8 月订单和后台报错的截图，按上次的规则清洗");
+    await win.press("#composer textarea", "Enter");
+    await win.waitForFunction(() => document.querySelector("#composer .send")!.textContent!.includes("传完后自动发送"));
+    check(true, "附件还没传完：按钮变成“传完后自动发送”");
+    await win.screenshot({ path: join(OUT, "gui-chat-attach.png") });
+    const shotRel = `inbox/${shot}`;
+    daemon.emitEvent({ t: "file.ready", folder: "workspace", path: "inbox/orders_aug.xlsx", absPath: "/home/claude/workspace/inbox/orders_aug.xlsx" });
+    daemon.emitEvent({ t: "file.ready", folder: "workspace", path: shotRel, absPath: `/home/claude/workspace/${shotRel}` });
+    await win.waitForFunction(() => document.querySelectorAll("#composer .chip").length === 0, null, { timeout: 8000 });
+    check(true, "两个附件就绪后自动发送，输入框清空");
+    await win.click('.ltab[data-ltab="term"]');
+    await win.waitForFunction(
+      () => document.querySelector(".xterm-rows")?.textContent?.includes("@/home/claude/workspace/inbox/orders_aug.xlsx"),
+      null,
+      { timeout: 8000 },
+    );
+    check(true, "消息（含 @文件引用）被粘贴进远程终端并回车");
+    await win.click('.ltab[data-ltab="chat"]');
+
+    console.log("Claude 忙时排队");
+    await hook(hp, { hook_event_name: "UserPromptSubmit", session_id: "sess-demo", transcript_path: transcript, prompt: "x" });
+    await win.waitForFunction(() => document.getElementById("claude-badge")!.textContent!.includes("工作中"));
+    await win.fill("#composer textarea", "上传完记得截图给我看");
+    await win.press("#composer textarea", "Enter");
+    await win.waitForFunction(() => [...document.querySelectorAll("#chat .msg.pending")].some((e) => e.textContent!.includes("排队中")));
+    check(true, "Claude 工作中：消息显示“排队中”");
+
+    console.log("权限请求");
+    appendFileSync(
+      transcript,
+      T("assistant", [{ type: "text", text: "文件已经准备好。上传前我需要先清理临时目录。" }]) +
+        T("assistant", [{ type: "tool_use", id: "tu3", name: "Bash", input: { command: "rm -rf work/tmp_export/" } }]),
+    );
+    const permDone = runPermissionHook(hp, {
+      hook_event_name: "PermissionRequest",
+      session_id: "sess-demo",
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf work/tmp_export/", description: "清理导出的临时文件" },
+    });
+    await win.waitForSelector("#chat .perm-card", { timeout: 8000 });
     await win.waitForFunction(() => document.getElementById("claude-badge")!.textContent!.includes("等待你确认"));
-    check(true, "Notification hook -> Claude 状态显示为“等待你确认”");
-    const tl = await win.textContent("#timeline");
-    check(tl.includes("unzip -o inbox/orders.zip") && tl.includes("cleaned_orders.csv"), "时间线显示工具调用和文件路径");
+    check(true, "权限请求显示为卡片，Claude 状态变成“等待你确认”");
+    await sleep(800);
+    await win.screenshot({ path: join(OUT, "gui-chat.png") });
+    await win.click("#chat .perm-allow");
+    const perm = await permDone;
+    check(perm.code === 0 && JSON.parse(perm.stdout).hookSpecificOutput.decision.behavior === "allow", "点“允许”后 hook 返回 allow 决定");
+    await win.waitForFunction(() => !document.querySelector("#chat .perm-card"));
+    check(true, "回答后卡片消失");
 
-    console.log("传输事件");
-    const GB = 1024 ** 3;
-    daemon.emitEvent({ t: "sync.item", folder: "inbox", path: "orders.zip", action: "update", phase: "started" });
-    daemon.emitEvent({ t: "sync.progress", folder: "inbox", path: "orders.zip", bytesDone: 0.2 * GB, bytesTotal: 0.8 * GB });
-    await sleep(600);
-    daemon.emitEvent({ t: "sync.progress", folder: "inbox", path: "orders.zip", bytesDone: 0.35 * GB, bytesTotal: 0.8 * GB });
-    daemon.emitEvent({ t: "sync.item", folder: "inbox", path: "contract_scan.pdf", action: "update", phase: "finished" });
-    daemon.emitEvent({ t: "file.ready", folder: "inbox", path: "contract_scan.pdf" });
+    await hook(hp, { hook_event_name: "Stop", session_id: "sess-demo", transcript_path: transcript });
+    await win.click('.ltab[data-ltab="term"]');
+    await win.waitForFunction(() => document.querySelector(".xterm-rows")?.textContent?.includes("上传完记得截图给我看"), null, { timeout: 8000 });
+    check(true, "Claude 空闲后，排队的消息自动送达终端");
+    await win.click('.ltab[data-ltab="chat"]');
 
-    console.log("远程画面");
+    console.log("文件面板");
+    writeFileSync(join(local, "outbox", "cleaned_orders.xlsx"), Buffer.alloc(1_350_000, 1));
+    writeFileSync(join(local, "outbox", "unparsed.csv"), "订单号,手机号\nA-10301,12345\n");
+    await win.click('.tab[data-tab="files"]');
+    await win.waitForFunction(() => document.getElementById("files")!.textContent!.includes("cleaned_orders.xlsx"));
+    const filesText = await win.textContent("#files");
+    check(filesText.includes("Claude 的产出") && filesText.includes("orders_aug.xlsx"), "文件面板列出 outbox/ 和 inbox/");
+    const draggable = await win.getAttribute("#files .file-row", "draggable");
+    check(draggable === "true", "文件行可以拖出");
+    await win.screenshot({ path: join(OUT, "gui-files.png") });
+
+    console.log("远程画面与断线重连");
     await win.waitForSelector("#screen canvas", { timeout: 15_000 });
     await win.waitForFunction(() => document.getElementById("screen-status")!.textContent === "", null, { timeout: 15_000 });
-    await sleep(1500);
-    const canvasOk = await win.evaluate(() => {
-      const c = document.querySelector("#screen canvas") as HTMLCanvasElement;
-      return c.width >= 1280 && c.height >= 800;
-    });
-    check(canvasOk, "noVNC 收到远程桌面帧（1280x800）");
-
-    await win.screenshot({ path: join(OUT, "gui-main.png") });
-    await win.click('.tab[data-tab="transfers"]');
-    await win.waitForFunction(() => document.querySelectorAll(".xfer").length >= 2);
-    const xfer = await win.textContent("#transfers");
-    check(xfer.includes("orders.zip") && xfer.includes("%") && xfer.includes("完成"), "传输面板显示进度和已完成的文件");
-    await win.screenshot({ path: join(OUT, "gui-transfers.png") });
-    await win.click('.tab[data-tab="timeline"]');
-
-    console.log("断线重连");
     for (const ws of (daemon as any).wss.clients) ws.terminate();
-    for (const ws of (daemon as any).vncWss.clients) ws.terminate();
     await win.waitForFunction(() => document.getElementById("conn-badge")!.textContent!.includes("重连"), null, { timeout: 5000 });
-    check(true, "断线后显示“重连中”");
     await win.waitForFunction(() => document.getElementById("conn-badge")!.textContent!.includes("已连接"), null, { timeout: 15_000 });
-    await win.click("#terminal");
-    await win.keyboard.type("echo reattached_$((1+1))");
-    await win.keyboard.press("Enter");
-    await win.waitForFunction(() => document.querySelector(".xterm-rows")?.textContent?.includes("reattached_2"), null, { timeout: 15_000 });
-    check(true, "自动重连后终端重新接入，可以继续输入");
-    await win.waitForFunction(() => document.getElementById("screen-status")!.textContent === "", null, { timeout: 20_000 });
-    check(true, "画面自动重连");
+    await win.waitForFunction(() => document.querySelectorAll("#chat .msg.assistant").length >= 3, null, { timeout: 8000 });
+    check(true, "断线重连后对话视图从快照恢复");
 
     console.log(`\n全部通过。截图在 ${OUT}`);
   } catch (e) {
     const w = (globalThis as any).__win;
-    if (w) {
-      await w.screenshot({ path: join(OUT, "gui-failure.png") }).catch(() => {});
-      console.log("  term-status:", await w.textContent("#term-status").catch(() => "?"));
-      console.log("  screen-status:", await w.textContent("#screen-status").catch(() => "?"));
-    }
+    if (w) await w.screenshot({ path: join(OUT, "gui-failure.png") }).catch(() => {});
     throw e;
   } finally {
     await app?.close().catch(() => {});

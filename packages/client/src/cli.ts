@@ -14,6 +14,7 @@ function usage(): never {
   rc status                                     连接并显示状态
   rc events                                     实时显示事件时间线（断线自动重连并补发）
   rc attach                                     接入远程 Claude 终端（tmux：Ctrl-b d 断开，Claude 继续运行）
+  rc send <文字>                                给 Claude 发一条消息（忙时排队，空闲后送达）
   rc vnc [--port 5901]                          在本机开 VNC 端口，用任意 VNC 查看器连 127.0.0.1:5901 看远程画面`);
   process.exit(1);
 }
@@ -113,6 +114,19 @@ async function main() {
           process.exit(0);
         });
         ws.on("error", (e) => status(`终端连接错误: ${e.message}`));
+      });
+      client.start();
+      return;
+    }
+
+    case "send": {
+      const text = args.join(" ");
+      if (!text) usage();
+      const client = makeClient();
+      client.once("connected", async () => {
+        const r = await client.sendChat(text);
+        console.log(r.status === "sent" ? "已送达" : r.status === "queued" ? "Claude 正忙，已排队" : `被拒绝：${r.reason}`);
+        client.stop();
       });
       client.start();
       return;

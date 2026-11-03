@@ -1,6 +1,8 @@
 import type { ClaudeState } from "@rc/core";
 import { claudeStateText } from "@rc/client/format";
 import type { ConnStatus, GuiState, RcApi } from "../shared";
+import { ChatView, Composer } from "./chat";
+import { FilesPanel } from "./files-panel";
 import { ScreenView } from "./screen";
 import { TerminalView } from "./terminal";
 import { TimelineView } from "./timeline";
@@ -16,7 +18,28 @@ const rc = window.rc;
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
 let claudeState: ClaudeState = "unknown";
-let views: { term: TerminalView; screen: ScreenView; timeline: TimelineView; transfers: TransfersView } | null = null;
+
+interface Views {
+  term: TerminalView;
+  screen: ScreenView;
+  timeline: TimelineView;
+  transfers: TransfersView;
+  chat: ChatView;
+  composer: Composer;
+  files: FilesPanel;
+}
+let views: Views | null = null;
+
+// ---------- 提示条 ----------
+
+let toastTimer: number | null = null;
+function toast(msg: string) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.hidden = false;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (t.hidden = true), 5000);
+}
 
 // ---------- 顶栏徽章 ----------
 
@@ -45,6 +68,7 @@ function renderClaude(s: ClaudeState) {
   badge.className = `badge ${cls}`;
   badge.textContent = `Claude：${claudeStateText(s)}`;
   document.title = s === "awaiting_input" ? "● Remote Claude — 等你确认" : "Remote Claude";
+  views?.composer.setClaudeState(s);
 }
 
 // ---------- 配对页 ----------
@@ -82,11 +106,15 @@ function showApp(state: GuiState) {
   $("daemon-name").textContent = state.profile ? `· ${state.profile.daemonName}` : "";
 
   if (!views) {
+    const chat = new ChatView($("chat"), rc);
     views = {
       term: new TerminalView($("terminal"), $("term-status"), rc),
       screen: new ScreenView($("screen"), $("screen-status"), rc),
       timeline: new TimelineView($("timeline")),
       transfers: new TransfersView($("transfers"), $("transfer-count")),
+      chat,
+      composer: new Composer($("composer"), rc, chat, toast),
+      files: new FilesPanel($("files"), rc, toast),
     };
   }
   views.timeline.clear();
@@ -94,9 +122,12 @@ function showApp(state: GuiState) {
     views.timeline.add(ev);
     views.transfers.handle("up", ev.body);
   }
+  views.chat.snapshot(state.chat);
+  views.chat.restorePermissions(state.events);
+  views.composer.setAttachments(state.attachments);
   renderClaude(state.claudeState);
   renderConn(state.conn);
-  views.term.focus();
+  views.composer.focus();
 }
 
 rc.onConn(renderConn);
@@ -104,20 +135,68 @@ rc.onClaudeState(renderClaude);
 rc.onEvent((ev) => {
   views?.timeline.add(ev);
   views?.transfers.handle("up", ev.body);
+  views?.chat.onEvent(ev);
 });
 rc.onReset(() => {
   views?.timeline.clear();
   views?.timeline.divider("daemon 重启过或断线太久，时间线从这里重新开始");
 });
-rc.onLocalSync((b) => views?.transfers.handle("down", b));
+rc.onLocalSync((b) => {
+  views?.transfers.handle("down", b);
+  if (b.t === "file.ready") void views?.files.refresh();
+});
+rc.onChatSnapshot((c) => views?.chat.snapshot(c));
+rc.onChatAppend((a) => views?.chat.appendFromServer(a.sessionId, a.items));
+rc.onAttachments((list) => views?.composer.setAttachments(list));
 
-// 标签页
-for (const tab of document.querySelectorAll<HTMLButtonElement>(".tab")) {
+// 左侧：对话 / 终端
+function showLeft(which: "chat" | "term") {
+  for (const t of document.querySelectorAll<HTMLElement>(".ltab")) t.classList.toggle("active", t.dataset.ltab === which);
+  for (const p of document.querySelectorAll<HTMLElement>("[data-lpanel]")) p.hidden = p.dataset.lpanel !== which;
+  if (which === "term") views?.term.focus();
+  else views?.composer.focus();
+}
+for (const tab of document.querySelectorAll<HTMLButtonElement>(".ltab")) {
+  tab.addEventListener("click", () => showLeft(tab.dataset.ltab as "chat" | "term"));
+}
+
+// 右下：时间线 / 传输 / 文件
+for (const tab of document.querySelectorAll<HTMLButtonElement>(".tab[data-tab]")) {
   tab.addEventListener("click", () => {
-    for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t === tab);
+    for (const t of document.querySelectorAll(".tab[data-tab]")) t.classList.toggle("active", t === tab);
     for (const p of document.querySelectorAll<HTMLElement>("[data-panel]")) p.hidden = p.dataset.panel !== tab.dataset.tab;
+    views?.files.setVisible(tab.dataset.tab === "files");
   });
 }
+
+// ---------- 拖入文件 ----------
+// 整个窗口都可以接收拖入；必须对 dragover/drop 调用 preventDefault，
+// 否则浏览器的默认行为是"打开这个文件"（主进程那边也拦了导航，双保险）。
+
+let dragDepth = 0;
+const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types ?? [])].includes("Files");
+window.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e) || $("app").hidden) return;
+  dragDepth++;
+  $("drop-overlay").hidden = false;
+});
+window.addEventListener("dragleave", (e) => {
+  if (!hasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) $("drop-overlay").hidden = true;
+});
+window.addEventListener("dragover", (e) => {
+  if (hasFiles(e)) e.preventDefault();
+});
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  $("drop-overlay").hidden = true;
+  const files = [...(e.dataTransfer?.files ?? [])];
+  if (!files.length || !views) return;
+  showLeft("chat");
+  void views.composer.addFiles(files);
+});
 
 // "我来操作"
 $<HTMLInputElement>("takeover").addEventListener("change", (e) => {
@@ -125,7 +204,7 @@ $<HTMLInputElement>("takeover").addEventListener("change", (e) => {
   if (box.checked && claudeState === "busy") {
     const ok = confirm(
       "Claude 正在工作。\n\n你在画面里的操作 Claude 不会知道，它记着的页面状态会过时，下一步可能点错。\n" +
-        "建议先在左边终端按 Esc 让它停下。\n\n仍然要接管吗？",
+        "建议先在终端按 Esc 让它停下。\n\n仍然要接管吗？",
     );
     if (!ok) {
       box.checked = false;
@@ -137,7 +216,7 @@ $<HTMLInputElement>("takeover").addEventListener("change", (e) => {
 
 $("btn-folder").addEventListener("click", async () => {
   const err = await rc.openLocalFolder();
-  if (err) alert(err);
+  if (err) toast(err);
 });
 
 // ---------- 设置 ----------

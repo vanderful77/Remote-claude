@@ -17,6 +17,8 @@
     "@xterm/addon-fit": "0.10.0",
     "@xterm/xterm": "5.5.0",
     "electron": "38.2.2",
-    "esbuild": "0.25.10"
+    "esbuild": "0.25.10",
+    "marked": "15.0.12",
+    "dompurify": "3.2.6"
   }
 }

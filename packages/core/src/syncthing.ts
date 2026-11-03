@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import { Backoff, sleep } from "./backoff";
 import type { EventBody } from "./protocol";
 
@@ -43,6 +44,9 @@ export class SyncthingWatcher extends EventEmitter<SyncthingWatcherEvents> {
   private up: boolean | null = null;
   private lastProgress = new Map<string, number>();
   private running: Promise<void> | null = null;
+  /** 文件夹 id -> 本机绝对路径（来自 Syncthing 配置），用来给 file.ready 补上 absPath */
+  private folderPaths = new Map<string, string>();
+  private foldersFetchedAt = 0;
 
   constructor(private readonly opts: SyncthingOptions) {
     super();
@@ -85,8 +89,25 @@ export class SyncthingWatcher extends EventEmitter<SyncthingWatcherEvents> {
   private async checkRestart(): Promise<void> {
     const status = await this.get("/rest/system/status", 10_000);
     const st = String(status.startTime ?? "");
-    if (this.startTime !== null && st !== this.startTime) this.since = 0;
+    const restarted = this.startTime !== null && st !== this.startTime;
+    if (restarted) this.since = 0;
     this.startTime = st;
+    if (restarted || Date.now() - this.foldersFetchedAt > 5 * 60_000) await this.refreshFolders();
+  }
+
+  private async refreshFolders(): Promise<void> {
+    try {
+      const folders: { id: string; path: string }[] = await this.get("/rest/config/folders", 10_000);
+      this.folderPaths = new Map(folders.filter((f) => f?.id && f?.path).map((f) => [f.id, f.path]));
+      this.foldersFetchedAt = Date.now();
+    } catch {
+      /* 老版本没有这个接口或暂时失败：file.ready 只是不带 absPath */
+    }
+  }
+
+  /** 某个 Syncthing 文件夹 id 在本机的路径（测试和 GUI 用） */
+  folderPath(id: string): string | undefined {
+    return this.folderPaths.get(id);
   }
 
   private async loop(): Promise<void> {
@@ -142,7 +163,8 @@ export class SyncthingWatcher extends EventEmitter<SyncthingWatcherEvents> {
         this.lastProgress.delete(`${d.folder}\0${d.item}`);
         // 只有"更新且成功"才算文件就绪；删除、元数据变更不算
         if (!error && d.action === "update") {
-          this.emit("event", { t: "file.ready", folder: d.folder, path: d.item });
+          const root = this.folderPaths.get(d.folder);
+          this.emit("event", { t: "file.ready", folder: d.folder, path: d.item, ...(root ? { absPath: join(root, d.item) } : {}) });
         }
         return;
       }

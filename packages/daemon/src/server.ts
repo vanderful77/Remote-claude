@@ -1,5 +1,6 @@
-import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import type { Duplex } from "node:stream";
@@ -11,6 +12,8 @@ import {
   HEARTBEAT_TIMEOUT_MS,
   PROTOCOL_VERSION,
   SyncthingWatcher,
+  type ClaudeState,
+  type ClientFeature,
   type ClientMessage,
   type EventBody,
   type PairRequest,
@@ -20,8 +23,9 @@ import {
 import { readSyncthingApiKey, type DaemonConfig } from "./config";
 import { DeviceStore } from "./devices";
 import { EventLog } from "./eventlog";
-import { ClaudeStateTracker, hookToEvent, startHookServer } from "./hooks";
-import { attachTerminal, ensureSession } from "./terminal";
+import { ClaudeStateTracker, hookToEvent, PERMISSION_WAIT_MS, sanitize, startHookServer } from "./hooks";
+import { attachTerminal, ensureSession, sendText } from "./terminal";
+import { isTranscriptPath, TranscriptTailer } from "./transcript";
 import { TokenStore } from "./tokens";
 import { bridgeVnc } from "./vnc";
 
@@ -34,7 +38,24 @@ interface Conn {
   lastSeen: number;
   /** 控制连接是否已完成补发、开始接收实时事件 */
   subscribed: boolean;
+  features: Set<ClientFeature>;
 }
+
+export interface DaemonOptions {
+  heartbeatMs?: number;
+  heartbeatTimeoutMs?: number;
+  /** 权限请求等 GUI 回答的最长时间 */
+  permissionWaitMs?: number;
+  /** 粘贴到 Claude 输入框后、按回车前的等待 */
+  chatSettleMs?: number;
+}
+
+interface PendingPermission {
+  resolve: (d: { behavior: "allow" | "deny"; message?: string } | null) => void;
+}
+
+const MAX_CHAT_TEXT = 100_000;
+const MAX_CHAT_QUEUE = 20;
 
 export interface Logger {
   info(msg: string): void;
@@ -64,15 +85,29 @@ export class Daemon {
   private syncthing: SyncthingWatcher | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private devicesVersion = 0;
+  readonly transcript = new TranscriptTailer();
+  private pendingPermissions = new Map<string, PendingPermission>();
+  private chatQueue: { id: string; text: string }[] = [];
+  private flushing = false;
+  private readonly opts: Required<DaemonOptions>;
 
   constructor(
     readonly cfg: DaemonConfig,
     private readonly log: Logger = consoleLogger,
-    private readonly heartbeatMs = HEARTBEAT_INTERVAL_MS,
-    private readonly heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS,
+    opts: DaemonOptions = {},
   ) {
     this.events = new EventLog(cfg.eventBufferSize);
     this.devices = new DeviceStore(cfg.stateDir);
+    this.opts = {
+      heartbeatMs: opts.heartbeatMs ?? HEARTBEAT_INTERVAL_MS,
+      heartbeatTimeoutMs: opts.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_MS,
+      permissionWaitMs: opts.permissionWaitMs ?? PERMISSION_WAIT_MS,
+      chatSettleMs: opts.chatSettleMs ?? 150,
+    };
+  }
+
+  get claudeState(): ClaudeState {
+    return this.claude.state;
   }
 
   /** 实际监听的端口（配置端口为 0 时由系统分配，测试用） */
@@ -99,7 +134,20 @@ export class Daemon {
       }
     });
 
-    this.hookServer = await startHookServer(this.cfg.hookPort, (p) => this.onHook(p));
+    this.hookServer = await startHookServer(this.cfg.hookPort, {
+      onHook: (p) => this.onHook(p),
+      onPermission: (p) => this.onPermission(p),
+    });
+
+    // 对话视图：会话记录有变化就推给订阅了 chat 的客户端
+    this.transcript.on("snapshot", (sessionId, items) => this.broadcastChat({ type: "chat.snapshot", sessionId, items }));
+    this.transcript.on("append", (sessionId, items) => this.broadcastChat({ type: "chat.append", sessionId, items }));
+    try {
+      const last = JSON.parse(readFileSync(join(this.cfg.stateDir, "transcript.json"), "utf8")).path;
+      if (isTranscriptPath(last)) this.transcript.follow(last);
+    } catch {
+      /* 还没有记录过 */
+    }
 
     const handler = (req: IncomingMessage, res: ServerResponse) => this.onHttp(req, res);
     this.server = this.cfg.tls
@@ -121,7 +169,7 @@ export class Daemon {
     }
 
     this.devicesVersion = this.devices.version();
-    this.heartbeatTimer = setInterval(() => this.heartbeat(), this.heartbeatMs);
+    this.heartbeatTimer = setInterval(() => this.heartbeat(), this.opts.heartbeatMs);
 
     // 预先建好 tmux 会话：daemon 一启动 Claude 就在跑，不必等第一个客户端连上
     ensureSession(this.cfg.terminal).catch((e) => this.log.warn(`tmux 会话创建失败: ${e.message}`));
@@ -133,6 +181,8 @@ export class Daemon {
 
   async stop(): Promise<void> {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.transcript.stop();
+    for (const p of this.pendingPermissions.values()) p.resolve(null);
     for (const c of this.conns) c.ws.close(CloseCode.Shutdown, "daemon shutting down");
     await this.syncthing?.stop();
     await new Promise<void>((r) => (this.hookServer ? this.hookServer.close(() => r()) : r()));
@@ -146,12 +196,148 @@ export class Daemon {
   // ---------- hooks ----------
 
   private onHook(payload: unknown): void {
-    const ev = hookToEvent(payload);
+    const p = payload as any;
+    const ev = hookToEvent(p);
     this.emitEvent(ev);
     if (ev.t === "claude.hook") {
-      const st = this.claude.update(ev.hook);
-      if (st) this.emitEvent({ t: "claude.state", state: st, reason: ev.hook });
+      const st = this.claude.update(ev.hook, p);
+      if (st) this.onStateChanged(st, ev.hook);
     }
+    // 每个 hook 都带着当前会话记录的路径：Claude 开了新会话（/clear、重启）时自动切换
+    if (isTranscriptPath(p?.transcript_path) && p.transcript_path !== this.transcriptPathSaved) {
+      this.transcriptPathSaved = p.transcript_path;
+      this.transcript.follow(p.transcript_path);
+      try {
+        writeFileSync(join(this.cfg.stateDir, "transcript.json"), JSON.stringify({ path: p.transcript_path }));
+      } catch {
+        /* 只是为了 daemon 重启后能恢复，失败无妨 */
+      }
+    }
+  }
+
+  private transcriptPathSaved: string | null = null;
+
+  private setState(st: ClaudeState, reason: string) {
+    if (this.claude.set(st)) this.onStateChanged(st, reason);
+  }
+
+  private onStateChanged(st: ClaudeState, reason: string) {
+    this.emitEvent({ t: "claude.state", state: st, reason });
+    if (st === "idle") void this.flushChat();
+  }
+
+  // ---------- 权限请求（PermissionRequest hook） ----------
+
+  private hasFeature(f: ClientFeature): boolean {
+    for (const c of this.conns) if (c.kind === "control" && c.deviceId && c.features.has(f) && c.ws.readyState === c.ws.OPEN) return true;
+    return false;
+  }
+
+  private async onPermission(payload: unknown): Promise<object | null> {
+    const p = payload as any;
+    this.onHook({ ...p, hook_event_name: "PermissionRequest" });
+    // 没有能回答的界面在线：立刻放手，Claude Code 照常在终端里弹确认框
+    if (!this.hasFeature("permissions")) return null;
+
+    const id = randomUUID();
+    const ev = hookToEvent(p);
+    this.emitEvent({
+      t: "permission.request",
+      id,
+      tool: String(p?.tool_name ?? "tool"),
+      ...(ev.t === "claude.hook" && ev.summary ? { summary: ev.summary } : {}),
+      input: sanitize(p?.tool_input),
+    });
+    const decision = await new Promise<{ behavior: "allow" | "deny"; message?: string } | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), this.opts.permissionWaitMs);
+      this.pendingPermissions.set(id, {
+        resolve: (d) => {
+          clearTimeout(timer);
+          resolve(d);
+        },
+      });
+    });
+    this.pendingPermissions.delete(id);
+    if (!decision) {
+      this.emitEvent({ t: "permission.resolved", id, by: "timeout" });
+      return null;
+    }
+    this.emitEvent({ t: "permission.resolved", id, behavior: decision.behavior, by: "gui" });
+    this.setState("busy", "PermissionDecision");
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision:
+          decision.behavior === "allow"
+            ? { behavior: "allow" }
+            : { behavior: "deny", message: decision.message || "用户在 Remote Claude 界面里拒绝了这个操作" },
+      },
+    };
+  }
+
+  // ---------- 对话输入 ----------
+
+  /**
+   * 能不能现在就把消息送进 Claude 的输入框：
+   * - idle：一轮结束，在等你输入，可以
+   * - unknown：没收到过 hook（可能没配 hooks），只能直接送
+   * - busy / awaiting_input / stopped：排队。尤其是 awaiting_input——这时终端里是权限确认框，
+   *   送进去的文字和回车会被当成对确认框的回答。
+   */
+  private canDeliver(): boolean {
+    return this.claude.state === "idle" || this.claude.state === "unknown";
+  }
+
+  async chatSend(id: string, text: string): Promise<{ status: "sent" | "queued" | "rejected"; reason?: string }> {
+    const preview = text.replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!text.trim()) return { status: "rejected", reason: "消息为空" };
+    if (text.length > MAX_CHAT_TEXT) return { status: "rejected", reason: "消息太长" };
+    if (this.chatQueue.length >= MAX_CHAT_QUEUE) return { status: "rejected", reason: "排队的消息太多" };
+    if (this.canDeliver() && !this.chatQueue.length && !this.flushing) {
+      try {
+        await this.deliver(id, text);
+        return { status: "sent" };
+      } catch (e) {
+        this.emitEvent({ t: "chat.input", id, status: "dropped", preview, reason: (e as Error).message });
+        return { status: "rejected", reason: (e as Error).message };
+      }
+    }
+    this.chatQueue.push({ id, text });
+    this.emitEvent({ t: "chat.input", id, status: "queued", preview });
+    return { status: "queued" };
+  }
+
+  private async deliver(id: string, text: string) {
+    await sendText(this.cfg.terminal, text, this.opts.chatSettleMs);
+    // 乐观地认为 Claude 开始工作了（随后的 UserPromptSubmit hook 会确认）。
+    // 必须走 setState 广播出去：只改内部状态的话，界面会一直显示"空闲"
+    if (this.claude.state === "idle") this.setState("busy", "ChatSent");
+    this.emitEvent({ t: "chat.input", id, status: "sent", preview: text.replace(/\s+/g, " ").trim().slice(0, 80) });
+  }
+
+  private async flushChat() {
+    if (this.flushing) return;
+    this.flushing = true;
+    try {
+      while (this.chatQueue.length && this.canDeliver()) {
+        const next = this.chatQueue.shift()!;
+        try {
+          await this.deliver(next.id, next.text);
+        } catch (e) {
+          this.emitEvent({ t: "chat.input", id: next.id, status: "dropped", preview: next.text.slice(0, 80), reason: (e as Error).message });
+        }
+        // 没有 hooks 时状态一直是 unknown：每条之间留点间隔，别把几条消息粘在一起
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  private broadcastChat(msg: ServerMessage) {
+    const text = JSON.stringify(msg);
+    for (const c of this.conns)
+      if (c.kind === "control" && c.subscribed && c.features.has("chat") && c.ws.readyState === c.ws.OPEN) c.ws.send(text);
   }
 
   // ---------- HTTP ----------
@@ -234,7 +420,7 @@ export class Daemon {
   }
 
   private track(ws: WebSocket, kind: Conn["kind"], deviceId: string | null): Conn {
-    const conn: Conn = { ws, kind, deviceId, lastSeen: Date.now(), subscribed: false };
+    const conn: Conn = { ws, kind, deviceId, lastSeen: Date.now(), subscribed: false, features: new Set() };
     this.conns.add(conn);
     ws.on("pong", () => (conn.lastSeen = Date.now()));
     ws.on("message", () => (conn.lastSeen = Date.now()));
@@ -295,6 +481,20 @@ export class Daemon {
           // 先补发，再标记为已订阅；Node 单线程，这两步之间不会插进新事件
           for (const ev of events) this.send(ws, { type: "event", event: ev });
           conn.subscribed = true;
+          conn.features = new Set((Array.isArray(msg.features) ? msg.features : []).filter((f) => f === "chat" || f === "permissions"));
+          if (conn.features.has("chat")) this.send(ws, { type: "chat.snapshot", ...this.transcript.snapshot() });
+          return;
+        }
+        case "chat.send": {
+          const id = String(msg.id ?? "");
+          void this.chatSend(id, String(msg.text ?? "")).then((r) => this.send(ws, { type: "chat.ack", id, ...r }));
+          return;
+        }
+        case "permission.decide": {
+          const pending = this.pendingPermissions.get(String(msg.id));
+          if (!pending || (msg.behavior !== "allow" && msg.behavior !== "deny")) return;
+          this.log.info(`permission ${msg.id} ${msg.behavior} by ${conn.deviceId}`);
+          pending.resolve({ behavior: msg.behavior, message: typeof msg.message === "string" ? msg.message.slice(0, 500) : undefined });
           return;
         }
         case "token.request": {
@@ -328,7 +528,7 @@ export class Daemon {
         c.ws.close(CloseCode.Revoked, "device revoked");
         continue;
       }
-      if (now - c.lastSeen > this.heartbeatTimeoutMs) {
+      if (now - c.lastSeen > this.opts.heartbeatTimeoutMs) {
         c.ws.terminate();
         continue;
       }

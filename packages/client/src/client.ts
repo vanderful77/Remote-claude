@@ -7,7 +7,9 @@ import {
   CloseCode,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_TIMEOUT_MS,
+  type ChatItem,
   type ClaudeState,
+  type ClientFeature,
   type ClientMessage,
   type EventEnvelope,
   type PairRequest,
@@ -33,6 +35,16 @@ export interface ClientEvents {
   event: [EventEnvelope];
   /** 设备被吊销或密钥不对，不会再重连 */
   fatal: [string];
+  /** 对话视图：完整快照（订阅 chat 时、Claude 换新会话时） */
+  chatSnapshot: [{ sessionId: string | null; items: ChatItem[] }];
+  chatAppend: [{ sessionId: string; items: ChatItem[] }];
+}
+
+export interface ChatAck {
+  /** 这条消息的 id，和 chat.input 事件里的 id 对应 */
+  id: string;
+  status: "sent" | "queued" | "rejected";
+  reason?: string;
 }
 
 export interface RemoteClientOptions {
@@ -44,6 +56,8 @@ export interface RemoteClientOptions {
   heartbeatMs?: number;
   heartbeatTimeoutMs?: number;
   backoff?: Backoff;
+  /** 声明本客户端的能力：GUI 用 ["chat", "permissions"]，命令行不声明 */
+  features?: ClientFeature[];
 }
 
 export function toWsUrl(base: string, path: string, params?: Record<string, string | number>): string {
@@ -75,6 +89,8 @@ export class RemoteClient extends EventEmitter<ClientEvents> {
   private pingId = 0;
   private reqId = 0;
   private pending = new Map<number, { resolve: (t: string) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private pendingChat = new Map<string, { resolve: (a: ChatAck) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private chatSeq = 0;
   private readonly backoff: Backoff;
 
   /** 补发进度。持久化它们，GUI 重启后也能接着补（目前只在内存里） */
@@ -121,6 +137,28 @@ export class RemoteClient extends EventEmitter<ClientEvents> {
       this.pending.set(id, { resolve, reject, timer });
       this.send({ type: "token.request", id, purpose });
     });
+  }
+
+  /**
+   * 通过对话输入框给 Claude 发消息。Claude 空闲时立刻送达，忙时由 daemon 排队，
+   * 等它完成当前这一轮（或你回答完权限确认）再送。
+   */
+  sendChat(text: string, timeoutMs = 15_000): Promise<ChatAck> {
+    if (!this.authed || !this.ws) return Promise.reject(new Error("not connected"));
+    const id = `c${Date.now().toString(36)}${++this.chatSeq}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingChat.delete(id);
+        reject(new Error("发送超时"));
+      }, timeoutMs);
+      this.pendingChat.set(id, { resolve, reject, timer });
+      this.send({ type: "chat.send", id, text });
+    });
+  }
+
+  /** 回答一个权限请求 */
+  decidePermission(id: string, behavior: "allow" | "deny", message?: string): void {
+    this.send({ type: "permission.decide", id, behavior, ...(message ? { message } : {}) });
   }
 
   /** 打开一个终端连接（每次调用都是一个新的 tmux attach） */
@@ -186,7 +224,7 @@ export class RemoteClient extends EventEmitter<ClientEvents> {
         this.backoff.reset();
         // 注意顺序：先用"旧的" bootId 订阅，daemon 据此判断能否续上；之后再更新
         this.resuming = this.bootId !== null;
-        this.send({ type: "subscribe", bootId: this.bootId, sinceSeq: this.lastSeq });
+        this.send({ type: "subscribe", bootId: this.bootId, sinceSeq: this.lastSeq, features: this.opts.features ?? [] });
         this.bootId = msg.bootId;
         this.emit("connected", { deviceName: msg.deviceName, claudeState: msg.claudeState });
         return;
@@ -202,6 +240,20 @@ export class RemoteClient extends EventEmitter<ClientEvents> {
         this.lastSeq = msg.event.seq;
         this.emit("event", msg.event);
         return;
+      case "chat.snapshot":
+        this.emit("chatSnapshot", { sessionId: msg.sessionId, items: msg.items });
+        return;
+      case "chat.append":
+        this.emit("chatAppend", { sessionId: msg.sessionId, items: msg.items });
+        return;
+      case "chat.ack": {
+        const p = this.pendingChat.get(msg.id);
+        if (!p) return;
+        clearTimeout(p.timer);
+        this.pendingChat.delete(msg.id);
+        p.resolve({ id: msg.id, status: msg.status, ...(msg.reason ? { reason: msg.reason } : {}) });
+        return;
+      }
       case "token": {
         const p = this.pending.get(msg.id);
         if (!p) return;
@@ -222,6 +274,11 @@ export class RemoteClient extends EventEmitter<ClientEvents> {
       p.reject(new Error("disconnected"));
     }
     this.pending.clear();
+    for (const [, p] of this.pendingChat) {
+      clearTimeout(p.timer);
+      p.reject(new Error("disconnected"));
+    }
+    this.pendingChat.clear();
   }
 
   private onClose(ws: WebSocket, code: number, reason: string): void {

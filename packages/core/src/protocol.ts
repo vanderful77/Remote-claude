@@ -50,8 +50,30 @@ export type EventBody =
   | { t: "sync.progress"; folder: string; path: string; bytesDone: number; bytesTotal: number }
   | { t: "sync.folder"; folder: string; state: string }
   | { t: "sync.connection"; status: "up" | "down"; error?: string }
-  /** Syncthing 把一个文件完整、校验通过地落盘到远程之后发出 */
-  | { t: "file.ready"; folder: string; path: string };
+  /**
+   * Syncthing 把一个文件完整、校验通过地落盘之后发出。
+   * absPath：该文件在 daemon 那台机器上的绝对路径（能查到 Syncthing 文件夹配置时才有），
+   * GUI 用它在输入框里插入 @引用。
+   */
+  | { t: "file.ready"; folder: string; path: string; absPath?: string }
+  /** Claude 请求权限，等待 GUI 回答（PermissionRequest hook） */
+  | { t: "permission.request"; id: string; tool: string; summary?: string; input: unknown }
+  /** 权限请求结束：gui=有人在 GUI 里回答了；timeout=没人回答，退回终端里的确认框 */
+  | { t: "permission.resolved"; id: string; behavior?: "allow" | "deny"; by: "gui" | "timeout" }
+  /** 通过对话输入框发给 Claude 的消息的去向 */
+  | { t: "chat.input"; id: string; status: "sent" | "queued" | "dropped"; preview: string; reason?: string };
+
+/**
+ * 对话视图里的一项，由 daemon 从 Claude Code 的会话记录（.jsonl）解析而来。
+ * 会话记录是 Claude Code 的内部格式，官方不保证稳定，所以解析只取最基本的字段，认不出的一律跳过。
+ */
+export type ChatItem =
+  | { k: "user"; id: string; ts: number; text: string }
+  /** 中断提示、斜杠命令回显等，显示成小号的系统提示 */
+  | { k: "note"; id: string; ts: number; text: string }
+  | { k: "assistant"; id: string; ts: number; text: string }
+  | { k: "tool_use"; id: string; ts: number; toolId: string; name: string; summary?: string; input: unknown }
+  | { k: "tool_result"; id: string; ts: number; toolId: string; isError: boolean; text: string };
 
 export interface EventEnvelope {
   seq: number;
@@ -64,8 +86,15 @@ export type TokenPurpose = "term" | "vnc";
 /** 客户端 -> 服务端（/ws） */
 export type ClientMessage =
   | { type: "auth"; deviceId: string; signature: string }
-  | { type: "subscribe"; bootId: string | null; sinceSeq: number }
+  /**
+   * features：客户端声明自己能处理的能力。
+   *   "permissions"：能在界面上回答权限请求。没有这类客户端在线时，daemon 不拦截权限请求。
+   *   "chat"：需要对话视图数据（会话记录快照与增量）。
+   */
+  | { type: "subscribe"; bootId: string | null; sinceSeq: number; features?: ClientFeature[] }
   | { type: "token.request"; id: number; purpose: TokenPurpose }
+  | { type: "chat.send"; id: string; text: string }
+  | { type: "permission.decide"; id: string; behavior: "allow" | "deny"; message?: string }
   | { type: "ping"; id: number };
 
 /** 服务端 -> 客户端（/ws） */
@@ -78,7 +107,13 @@ export type ServerMessage =
   | { type: "event"; event: EventEnvelope }
   | { type: "token"; id: number; purpose: TokenPurpose; token: string; expiresAt: number }
   | { type: "pong"; id: number }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /** 当前会话的完整对话（订阅时、以及 Claude 换了新会话时发送） */
+  | { type: "chat.snapshot"; sessionId: string | null; items: ChatItem[] }
+  | { type: "chat.append"; sessionId: string; items: ChatItem[] }
+  | { type: "chat.ack"; id: string; status: "sent" | "queued" | "rejected"; reason?: string };
+
+export type ClientFeature = "permissions" | "chat";
 
 /** /term 上客户端发的文本帧 */
 export type TermControl = { type: "resize"; cols: number; rows: number };

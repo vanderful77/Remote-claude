@@ -42,16 +42,20 @@ describe("hook 数据处理", () => {
     expect(t.update("SessionStart")).toBe("idle");
     expect(t.update("UserPromptSubmit")).toBe("busy");
     expect(t.update("PreToolUse")).toBeNull(); // 状态没变不重复报
-    expect(t.update("Notification")).toBe("awaiting_input");
+    expect(t.update("Notification")).toBe("awaiting_input"); // 旧版本没有 notification_type
+    expect(t.update("Notification", { notification_type: "idle_prompt" })).toBe("idle");
+    expect(t.update("Notification", { notification_type: "permission_prompt" })).toBe("awaiting_input");
+    expect(t.update("Notification", { notification_type: "auth_success" })).toBeNull();
     expect(t.update("PostToolUse")).toBe("busy");
     expect(t.update("Stop")).toBe("idle");
     expect(t.update("SomethingNew")).toBeNull();
   });
 
   it("生成的 settings 片段格式", () => {
-    const s = hooksSettings("/opt/rcd/hooks/forward-hook.mjs", 8444) as any;
+    const s = hooksSettings("/opt/rcd/hooks", 8444) as any;
     expect(s.hooks.PreToolUse[0].matcher).toBe("*");
     expect(s.hooks.Stop[0].hooks[0].command).toBe('node "/opt/rcd/hooks/forward-hook.mjs" 8444');
+    expect(s.hooks.PermissionRequest[0].hooks[0]).toMatchObject({ command: 'node "/opt/rcd/hooks/permission-hook.mjs" 8444', timeout: 120 });
   });
 });
 
