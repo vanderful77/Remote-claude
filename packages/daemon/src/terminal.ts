@@ -26,8 +26,25 @@ export interface TerminalConfig {
 const HIGH_WATER = 1024 * 1024;
 const LOW_WATER = 256 * 1024;
 
+/**
+ * 保证 tmux 和其中的程序运行在 UTF-8 locale 下。
+ * 否则中文会出问题：bash/readline 把中文的字节当成 Meta 组合键（例如触发补全），
+ * tmux 也可能把非 ASCII 字符画成下划线。Claude 的输出和你的提示词里都有大量中文，这一点必须保证。
+ */
+export function utf8Env(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env = { ...base } as Record<string, string>;
+  const effective = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
+  if (!/utf-?8/i.test(effective)) {
+    delete env.LC_ALL;
+    env.LANG = "C.UTF-8";
+    env.LC_CTYPE = "C.UTF-8";
+  }
+  return env;
+}
+
 function tmux(cfg: TerminalConfig, ...args: string[]) {
-  return exec("tmux", ["-L", cfg.tmuxSocket, ...args]);
+  // -u：强制 tmux 按 UTF-8 处理
+  return exec("tmux", ["-u", "-L", cfg.tmuxSocket, ...args], { env: utf8Env() });
 }
 
 export async function ensureSession(cfg: TerminalConfig): Promise<void> {
@@ -105,12 +122,12 @@ export async function attachTerminal(
   await ensureSession(cfg);
   if (closed) return;
 
-  const t = pty.spawn("tmux", ["-L", cfg.tmuxSocket, "attach-session", "-t", `=${cfg.session}`], {
+  const t = pty.spawn("tmux", ["-u", "-L", cfg.tmuxSocket, "attach-session", "-t", `=${cfg.session}`], {
     name: "xterm-256color",
     cols,
     rows,
     cwd: cfg.cwd,
-    env: { ...process.env, TERM: "xterm-256color" } as Record<string, string>,
+    env: { ...utf8Env(), TERM: "xterm-256color" },
   });
   term = t;
 

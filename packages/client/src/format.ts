@@ -1,46 +1,72 @@
-import type { EventEnvelope } from "@rc/core";
+import type { EventBody, EventEnvelope } from "@rc/core";
 
-function size(n: number): string {
+/**
+ * 事件的人类可读描述。命令行和 GUI 共用（这个文件不依赖 Node，可以打包进浏览器端）。
+ */
+
+export function formatSize(n: number): string {
   if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(2)} GB`;
   if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
   if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(0)} KB`;
   return `${n} B`;
 }
 
-/** 把一个事件格式化成时间线上的一行 */
-export function formatEvent(ev: EventEnvelope): string {
-  const time = new Date(ev.ts).toLocaleTimeString("zh-CN", { hour12: false });
-  const b = ev.body;
-  let line: string;
+export type EventKind = "daemon" | "claude" | "state" | "sync" | "ready";
+
+export interface EventDescription {
+  kind: EventKind;
+  text: string;
+  error?: boolean;
+}
+
+const STATE_TEXT: Record<string, string> = {
+  unknown: "未知",
+  idle: "空闲",
+  busy: "工作中",
+  awaiting_input: "等待你确认",
+  stopped: "已退出",
+};
+
+export function claudeStateText(s: string): string {
+  return STATE_TEXT[s] ?? s;
+}
+
+export function describeEvent(b: EventBody): EventDescription {
   switch (b.t) {
     case "daemon.started":
-      line = `daemon  启动 v${b.version}`;
-      break;
+      return { kind: "daemon", text: `daemon 启动 v${b.version}` };
     case "claude.hook":
-      line = `claude  ${b.hook}${b.tool ? " " + b.tool : ""}${b.summary ? "  " + b.summary : ""}`;
-      break;
+      return { kind: "claude", text: `${b.hook}${b.tool ? " " + b.tool : ""}${b.summary ? "  " + b.summary : ""}` };
     case "claude.state":
-      line = `state   ${b.state}  (${b.reason})`;
-      break;
+      return { kind: "state", text: `${claudeStateText(b.state)}  (${b.reason})` };
     case "sync.item":
-      line = `sync    ${b.phase === "started" ? "开始" : b.error ? "失败" : "完成"} ${b.action} ${b.folder}/${b.path}${b.error ? "  " + b.error : ""}`;
-      break;
+      return {
+        kind: "sync",
+        text: `${b.phase === "started" ? "开始" : b.error ? "失败" : "完成"} ${b.action} ${b.folder}/${b.path}${b.error ? "  " + b.error : ""}`,
+        error: !!b.error,
+      };
     case "sync.progress": {
       const pct = b.bytesTotal ? Math.floor((b.bytesDone / b.bytesTotal) * 100) : 0;
-      line = `sync    ↓ ${b.folder}/${b.path} ${pct}% (${size(b.bytesDone)}/${size(b.bytesTotal)})`;
-      break;
+      return { kind: "sync", text: `↓ ${b.folder}/${b.path} ${pct}% (${formatSize(b.bytesDone)}/${formatSize(b.bytesTotal)})` };
     }
     case "sync.folder":
-      line = `sync    文件夹 ${b.folder}: ${b.state}`;
-      break;
+      return { kind: "sync", text: `文件夹 ${b.folder}: ${b.state}` };
     case "sync.connection":
-      line = `sync    Syncthing ${b.status === "up" ? "已连接" : "连接断开"}${b.error ? "  " + b.error : ""}`;
-      break;
+      return {
+        kind: "sync",
+        text: `Syncthing ${b.status === "up" ? "已连接" : "连接断开"}${b.error ? "  " + b.error : ""}`,
+        error: b.status === "down",
+      };
     case "file.ready":
-      line = `ready   ${b.folder}/${b.path}`;
-      break;
+      return { kind: "ready", text: `${b.folder}/${b.path}` };
     default:
-      line = JSON.stringify(b);
+      return { kind: "daemon", text: JSON.stringify(b) };
   }
-  return `${time} #${ev.seq} ${line}`;
+}
+
+/** 命令行用：一行文本 */
+export function formatEvent(ev: EventEnvelope): string {
+  const time = new Date(ev.ts).toLocaleTimeString("zh-CN", { hour12: false });
+  const d = describeEvent(ev.body);
+  return `${time} #${ev.seq} ${d.kind.padEnd(7)} ${d.text}`;
 }

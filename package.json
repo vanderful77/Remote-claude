@@ -5,13 +5,17 @@
   "workspaces": [
     "packages/core",
     "packages/daemon",
-    "packages/client"
+    "packages/client",
+    "packages/gui"
   ],
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "rcd": "tsx packages/daemon/src/cli.ts",
-    "rc": "tsx packages/client/src/cli.ts"
+    "rc": "tsx packages/client/src/cli.ts",
+    "gui": "npm --workspace @rc/gui run start",
+    "gui:build": "npm --workspace @rc/gui run build",
+    "test:gui": "npm run gui:build && tsx test/gui-e2e.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

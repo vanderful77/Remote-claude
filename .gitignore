@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.log
 .rc-test-*/
+packages/gui/dist/
+test/screenshots/

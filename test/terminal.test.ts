@@ -49,6 +49,21 @@ describe("终端（tmux attach）", () => {
     c.stop();
   });
 
+  it("中文输入输出不乱码（UTF-8）", async () => {
+    env = await startEnv();
+    const c = await pairedClient(env);
+    c.start();
+    await once(c, "connected");
+    const ws = await c.openTerminal(100, 30);
+    const out = collect(ws);
+    await once(ws, "open");
+    await new Promise((r) => setTimeout(r, 300));
+    ws.send(Buffer.from("echo 把文件交给Claude处理_$((1+1))\r"), { binary: true });
+    await waitFor(() => out.text().includes("把文件交给Claude处理_2"), 5000, "unicode output");
+    ws.close();
+    c.stop();
+  });
+
   it("令牌只能用一次", async () => {
     env = await startEnv();
     const c = await pairedClient(env);
