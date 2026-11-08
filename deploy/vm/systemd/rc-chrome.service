@@ -1,0 +1,15 @@
+# Claude 操作的 Chrome：开在虚拟显示器上（所以 VNC 能看到），
+# CDP 只监听 127.0.0.1（CDP 等于浏览器完全控制权，包括所有 Cookie）。
+# 用固定的用户数据目录：网站登录状态在重启后保留。
+[Unit]
+Description=Chrome for Claude (CDP on 127.0.0.1:9222)
+After=rc-desktop.service
+
+[Service]
+Environment=DISPLAY=:1
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/bin/google-chrome-stable --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=%h/.config/chrome-claude --no-first-run --no-default-browser-check
+Restart=always
+
+[Install]
+WantedBy=default.target

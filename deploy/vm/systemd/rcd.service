@@ -1,0 +1,17 @@
+# rcd 需要 Tailscale IP 已经就绪才能绑定；绑定失败会退出，由 Restart 自动重试。
+[Unit]
+Description=remote-claude daemon
+After=rc-desktop.service network-online.target
+
+[Service]
+Environment=DISPLAY=:1
+# systemd 用户服务的 PATH 不含 ~/.local/bin，而 Claude Code 官方安装脚本装在那里；
+# 不加这一行，tmux 里的 claude 会"找不到命令"，会话一启动就退出
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/Remote-claude
+ExecStart=/usr/bin/npx tsx packages/daemon/src/cli.ts start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

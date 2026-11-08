@@ -1,0 +1,13 @@
+[Unit]
+Description=Xfce session on :1
+After=rc-vnc.service
+Requires=rc-vnc.service
+
+[Service]
+Environment=DISPLAY=:1
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/dbus-launch --exit-with-session /usr/bin/startxfce4
+Restart=always
+
+[Install]
+WantedBy=default.target

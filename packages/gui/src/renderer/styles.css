@@ -1,0 +1,803 @@
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --panel-2: #eef0f3;
+  --border: #d9dde3;
+  --text: #1c1f24;
+  --muted: #6a717d;
+  --accent: #c2410c;
+  --ok: #15803d;
+  --warn: #b45309;
+  --bad: #b91c1c;
+  --info: #1d4ed8;
+  --term-bg: #15171c;
+  --radius: 8px;
+  --font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --panel: #171a20;
+    --panel-2: #1f232b;
+    --border: #2b3039;
+    --text: #e6e8ec;
+    --muted: #8b93a1;
+    --accent: #f97316;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --info: #60a5fa;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--font);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+button.danger {
+  background: transparent;
+  color: var(--bad);
+  border: 1px solid var(--bad);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+input {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+code {
+  font-family: var(--mono);
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+.error {
+  color: var(--bad);
+  min-height: 1.4em;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  color: var(--text);
+}
+
+/* ---------- 配对页 ---------- */
+.pair-view {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.pair-view form {
+  width: min(440px, 100%);
+  display: grid;
+  gap: 14px;
+}
+.pair-view h1 {
+  font-size: 20px;
+  margin: 0;
+}
+label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ---------- 主界面 ---------- */
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.brand {
+  font-weight: 600;
+}
+.spacer {
+  flex: 1;
+}
+
+.badge {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  background: currentColor;
+  vertical-align: 1px;
+}
+.badge.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+.badge.warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.badge.bad {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
+.badge.info {
+  color: var(--info);
+  border-color: color-mix(in srgb, var(--info) 40%, transparent);
+}
+.badge.attention {
+  color: var(--warn);
+  border-color: var(--warn);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    background: color-mix(in srgb, var(--warn) 15%, transparent);
+  }
+}
+
+.workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(480px, 1.15fr);
+  gap: 10px;
+  padding: 10px;
+}
+
+.pane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.pane-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 36px;
+}
+
+.left-pane {
+  position: relative;
+}
+.term-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--term-bg);
+}
+.terminal {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+/* padding 放在 .xterm 上而不是容器上：FitAddon 只扣除 .xterm 自己的 padding，
+   放在容器上会让计算出的行数多一行，底部（tmux 状态栏）被裁掉 */
+.terminal .xterm {
+  height: 100%;
+  padding: 6px 4px 4px 8px;
+}
+.terminal .xterm-viewport {
+  scrollbar-color: #3b4250 transparent;
+}
+.terminal .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+  background: transparent;
+}
+.terminal .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #3b4250;
+  border-radius: 4px;
+}
+
+.right {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 3fr 2fr;
+  gap: 10px;
+}
+
+.screen {
+  flex: 1;
+  min-height: 0;
+  background: #000;
+  position: relative;
+}
+.toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+  color: var(--text);
+}
+.toggle input {
+  width: auto;
+}
+
+.tabs {
+  padding: 0 6px;
+  gap: 2px;
+}
+.tab {
+  background: transparent;
+  color: var(--muted);
+  border-radius: 0;
+  padding: 8px 12px;
+  border-bottom: 2px solid transparent;
+}
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.count {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+/* ---------- 时间线 ---------- */
+.timeline {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 0;
+}
+.ev {
+  display: grid;
+  grid-template-columns: 64px 64px 1fr;
+  gap: 8px;
+  padding: 2px 12px;
+  white-space: nowrap;
+}
+.ev:hover {
+  background: var(--panel-2);
+}
+.ev .time {
+  color: var(--muted);
+}
+.ev .kind {
+  font-weight: 600;
+}
+.ev .text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ev.claude .kind {
+  color: var(--accent);
+}
+.ev.state .kind {
+  color: var(--info);
+}
+.ev.sync .kind {
+  color: var(--muted);
+}
+.ev.ready .kind {
+  color: var(--ok);
+}
+.ev.error .text {
+  color: var(--bad);
+}
+.ev.divider {
+  display: block;
+  color: var(--muted);
+  text-align: center;
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 4px;
+}
+
+/* ---------- 传输 ---------- */
+.transfers {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 12px;
+}
+.empty {
+  padding: 12px 0;
+}
+.xfer {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.xfer .dir {
+  font-size: 15px;
+  text-align: center;
+}
+.xfer .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xfer .meta {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.xfer .bar {
+  grid-column: 2 / 4;
+  height: 5px;
+  background: var(--panel-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.xfer .bar > div {
+  height: 100%;
+  background: var(--info);
+  transition: width 0.3s;
+}
+.xfer.done .bar > div {
+  background: var(--ok);
+}
+.xfer.failed .bar > div {
+  background: var(--bad);
+}
+
+/* ---------- 设置 ---------- */
+dialog {
+  width: min(520px, calc(100% - 32px));
+}
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+dialog h2 {
+  margin-top: 0;
+  font-size: 18px;
+}
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0 0 14px;
+  padding: 10px 12px 12px;
+  display: grid;
+  gap: 8px;
+}
+legend {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 4px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.row.end {
+  justify-content: flex-end;
+}
+
+/* ---------- 对话 ---------- */
+.chat-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chat-empty {
+  margin: auto;
+  text-align: center;
+  max-width: 420px;
+  color: var(--muted);
+}
+.msg {
+  max-width: 100%;
+}
+.msg.user {
+  align-self: flex-end;
+  max-width: 85%;
+}
+.msg.user .bubble {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px 14px 4px 14px;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.user.pending .bubble {
+  opacity: 0.7;
+  border-style: dashed;
+}
+.msg.user.failed .bubble {
+  border-color: var(--bad);
+}
+.pending-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  margin-top: 2px;
+}
+.msg.note {
+  align-self: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.msg.assistant {
+  align-self: stretch;
+}
+.md {
+  line-height: 1.6;
+  word-break: break-word;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md pre {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font: 12px/1.5 var(--mono);
+}
+.md code {
+  font-size: 12.5px;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+}
+.md table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+}
+.md a {
+  color: var(--info);
+}
+
+details.tool {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12.5px;
+}
+details.tool > summary {
+  cursor: pointer;
+  padding: 5px 10px;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  list-style: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+details.tool > summary::before {
+  content: "▸";
+  color: var(--muted);
+}
+details.tool[open] > summary::before {
+  content: "▾";
+}
+.tool-name {
+  font-weight: 600;
+  color: var(--accent);
+}
+.tool-summary {
+  font-family: var(--mono);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.tool-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+details.tool.error .tool-status {
+  color: var(--bad);
+}
+details.tool pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  font: 11.5px/1.5 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+}
+details.tool pre.tool-result.error {
+  color: var(--bad);
+}
+
+/* 权限请求卡片 */
+.chat-perms {
+  display: grid;
+  gap: 8px;
+  padding: 0 14px;
+}
+.chat-perms:empty {
+  display: none;
+}
+.perm-card {
+  border: 1px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+.perm-title {
+  font-weight: 600;
+}
+.perm-summary {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.perm-details pre {
+  font: 11.5px/1.5 var(--mono);
+  max-height: 200px;
+  overflow: auto;
+  margin: 4px 0 0;
+}
+.perm-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.perm-actions .muted {
+  margin-right: auto;
+}
+
+/* 输入框 */
+.composer {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px 8px;
+  display: grid;
+  gap: 6px;
+}
+.composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.composer textarea {
+  flex: 1;
+  resize: none;
+  font: inherit;
+  color: inherit;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 38px;
+  max-height: 220px;
+}
+.composer .send.waiting {
+  background: var(--warn);
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chips:empty {
+  display: none;
+}
+.chip {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 6px;
+  min-width: 180px;
+  max-width: 280px;
+  padding: 6px 8px 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+.chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.chip-meta {
+  grid-column: 1;
+  color: var(--muted);
+}
+.chip-x {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 4px;
+  align-self: center;
+}
+.chip-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+}
+.chip-bar > div {
+  height: 100%;
+  background: var(--info);
+}
+.chip.ready .chip-bar > div {
+  background: var(--ok);
+}
+.chip.failed {
+  border-color: var(--bad);
+}
+.chip.failed .chip-meta {
+  color: var(--bad);
+}
+
+/* 拖入遮罩 */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+.drop-overlay .small {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* 文件面板 */
+.files {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 12px 8px;
+}
+.files-head {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 0 4px;
+}
+.file-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: grab;
+}
+.file-row:hover {
+  background: var(--panel-2);
+}
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-meta {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.small-btn {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+/* 提示条 */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 32px));
+  background: var(--text);
+  color: var(--bg);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 50;
+}

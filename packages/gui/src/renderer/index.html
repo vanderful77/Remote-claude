@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      CSP：只允许加载本地打包的脚本；网络连接只允许 WebSocket（终端和画面）。
+      界面会显示来自远程的不可信文本（Claude 输出、文件名），CSP 是防 XSS 的第二道防线，
+      第一道是所有动态文本一律用 textContent 插入。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src ws: wss:; worker-src 'self' blob:"
+    />
+    <title>Remote Claude</title>
+    <link rel="stylesheet" href="xterm.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="pair-view" class="pair-view" hidden>
+      <form id="pair-form" class="card">
+        <h1>连接远程 Claude 工作站</h1>
+        <p class="muted">先在远程执行 <code>rcd pair</code> 拿到配对码。配对码 10 分钟内有效，只能用一次。</p>
+        <label>daemon 地址<input id="pair-url" placeholder="http://100.64.0.10:8443" required /></label>
+        <label>配对码<input id="pair-code" placeholder="ABCD-EFGH" required autocomplete="off" /></label>
+        <label>这台设备的名字<input id="pair-name" placeholder="我的笔记本" /></label>
+        <button type="submit" id="pair-submit">配对</button>
+        <p id="pair-error" class="error" role="alert"></p>
+      </form>
+    </div>
+
+    <div id="app" class="app" hidden>
+      <header class="topbar">
+        <div class="brand">Remote Claude <span id="daemon-name" class="muted"></span></div>
+        <div id="conn-badge" class="badge">未连接</div>
+        <div id="claude-badge" class="badge">Claude：未知</div>
+        <div class="spacer"></div>
+        <button id="btn-folder" class="ghost">打开同步文件夹</button>
+        <button id="btn-settings" class="ghost">设置</button>
+      </header>
+
+      <main class="workspace">
+        <section class="pane left-pane" id="left-pane">
+          <div class="pane-title tabs" role="tablist">
+            <button class="tab ltab active" data-ltab="chat" role="tab">对话</button>
+            <button class="tab ltab" data-ltab="term" role="tab">终端</button>
+            <span id="term-status" class="muted small"></span>
+          </div>
+
+          <div class="chat-pane" data-lpanel="chat" id="chat">
+            <div class="chat-list"></div>
+            <div class="chat-perms"></div>
+            <div class="composer" id="composer">
+              <div class="chips"></div>
+              <div class="composer-row">
+                <button class="ghost attach" title="添加文件（也可以直接拖进来，或粘贴截图）">＋ 文件</button>
+                <input type="file" multiple hidden id="file-input" />
+                <textarea rows="1" placeholder="给 Claude 发消息……（Enter 发送，Shift+Enter 换行；可拖入文件或粘贴截图）"></textarea>
+                <button class="send">发送</button>
+              </div>
+              <div class="composer-hint muted small"></div>
+            </div>
+          </div>
+
+          <div class="term-pane" data-lpanel="term" hidden>
+            <div id="terminal" class="terminal"></div>
+          </div>
+
+          <div id="drop-overlay" class="drop-overlay" hidden>
+            <div>松开，把文件交给 Claude<br /><span class="small">文件会放进同步文件夹的 inbox/，传到远程后自动引用</span></div>
+          </div>
+        </section>
+
+        <section class="right">
+          <section class="pane screen-pane">
+            <div class="pane-title">
+              <span>远程画面</span>
+              <label class="toggle"><input type="checkbox" id="takeover" /> 我来操作</label>
+              <span id="screen-status" class="muted small"></span>
+            </div>
+            <div id="screen" class="screen"></div>
+          </section>
+
+          <section class="pane bottom-pane">
+            <div class="pane-title tabs" role="tablist">
+              <button class="tab active" data-tab="timeline" role="tab">时间线</button>
+              <button class="tab" data-tab="transfers" role="tab">传输 <span id="transfer-count" class="count"></span></button>
+              <button class="tab" data-tab="files" role="tab">文件</button>
+            </div>
+            <div id="timeline" class="timeline" data-panel="timeline"></div>
+            <div id="transfers" class="transfers" data-panel="transfers" hidden>
+              <p class="muted empty">还没有传输。把文件拖进对话框，或放进本地同步文件夹，Syncthing 会自动传到远程。</p>
+            </div>
+            <div id="files" class="files" data-panel="files" hidden></div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+
+    <dialog id="settings-dialog" class="card">
+      <form method="dialog" id="settings-form">
+        <h2>设置</h2>
+        <fieldset>
+          <legend>本地同步文件夹</legend>
+          <div class="row">
+            <input id="set-folder" placeholder="未设置" readonly />
+            <button type="button" id="set-folder-choose" class="ghost">选择…</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>本地 Syncthing（可选，用来显示"远程 → 本地"的接收进度）</legend>
+          <label>地址<input id="set-st-url" placeholder="http://127.0.0.1:8384" /></label>
+          <label>API Key<input id="set-st-key" type="password" placeholder="Syncthing 网页界面 → 设置 → 常规" /></label>
+        </fieldset>
+        <fieldset>
+          <legend>设备</legend>
+          <p id="set-device" class="muted small"></p>
+          <p id="set-key" class="small"></p>
+          <button type="button" id="set-unpair" class="danger">解除配对</button>
+        </fieldset>
+        <div class="row end">
+          <button value="cancel" class="ghost">取消</button>
+          <button value="save" id="set-save">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="renderer.js"></script>
+  </body>
+</html>
