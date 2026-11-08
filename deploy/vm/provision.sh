@@ -36,7 +36,8 @@ curl -fsSL https://tailscale.com/install.sh | sh
 
 # 以 claude 用户身份安装 Claude Code 和项目依赖
 sudo -u $U bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
-sudo -u $U bash -lc "cd $REPO && npm ci"
+# 服务器上用不到 Electron（那是本地 GUI 的依赖），跳过它一百多 MB 的二进制下载
+sudo -u $U bash -lc "cd $REPO && ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci"
 sudo -u $U mkdir -p $H/workspace $H/.config/systemd/user $H/.config/rcd
 
 # systemd 用户服务：不登录也常驻
@@ -63,4 +64,6 @@ cat <<EOF
      cd $REPO && npx tsx packages/daemon/src/cli.ts pair
 8. 确认环境里没有 ANTHROPIC_API_KEY（否则可能走 API 计费）：
      env | grep -i anthropic || echo OK
+9. 确认 claude 的位置在 rcd 服务的 PATH 里（~/.local/bin 或 /usr/local/bin）：
+     sudo -u $U bash -lc 'command -v claude'
 EOF
